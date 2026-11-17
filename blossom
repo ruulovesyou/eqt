@@ -1,29 +1,45 @@
---!nonstrict
-local Players = game:GetService('Players')
-local UserInputService = game:GetService('UserInputService')
-local GuiService = game:GetService('GuiService')
-local Cleanup = require(script.Core.Cleanup)
-local Store = require(script.Core.Store)
-local Value = require(script.Core.Value)
-local Renderer = require(script.Core.Renderer)
-local ThemeManager = require(script.Core.ThemeManager)
-local InputManager = require(script.Core.InputManager)
-local OverlayManager = require(script.Core.OverlayManager)
-local ModalManager = require(script.Core.ModalManager)
-local LayoutManager = require(script.Core.LayoutManager)
-local KeybindManager = require(script.Core.KeybindManager)
-local ColorAnimator = require(script.Core.ColorAnimator)
-local ProfileStore = require(script.Core.ProfileStore)
-local Presets = require(script.Themes.Presets)
-local SearchDialog = require(script.Components.SearchDialog)
-local Tokens = require(script.Themes.Tokens)
-local Window = require(script.Components.Window)
-local Sidebar = require(script.Components.Sidebar)
-local Page = require(script.Components.Page)
-
+-- Context: Luau Script / Blossom UI Library (Self-Contained Single-File Loadstring) / Client-side
 local Blossom = {}
 Blossom.__index = Blossom
 
+local Players = game:GetService('Players')
+local UserInputService = game:GetService('UserInputService')
+local GuiService = game:GetService('GuiService')
+local TweenService = game:GetService('TweenService')
+local RunService = game:GetService('RunService')
+
+-- Theme & Tokens
+local Tokens = {
+    Width = 422, Height = 336, Sidebar = 103, Gutter = 8,
+    Radius = 7, CardRadius = 4, ControlRadius = 3,
+    TextSize = 10, SmallText = 9, TitleSize = 13,
+    RowHeight = 22, FieldHeight = 20, SliderHeight = 34,
+    NavHeight = 23, SectionHeader = 24, ControlGap = 3,
+    HoverTime = 0.09, ToggleTime = 0.12,
+    PopupRow = 22, PopupMaxHeight = 144,
+}
+
+local ThemePresets = {
+    Names = {'Blossom'},
+    Blossom = {
+        Background = Color3.fromRGB(29, 31, 34),
+        Sidebar = Color3.fromRGB(27, 29, 32),
+        Tab = Color3.fromRGB(37, 39, 43),
+        Section = Color3.fromRGB(41, 43, 47),
+        Input = Color3.fromRGB(37, 39, 42),
+        Outline = Color3.fromRGB(56, 59, 64),
+        Inline = Color3.fromRGB(48, 51, 56),
+        Text = Color3.fromRGB(227, 230, 234),
+        InactiveText = Color3.fromRGB(141, 146, 155),
+        Accent = Color3.fromRGB(116, 169, 227),
+        Element = Color3.fromRGB(51, 54, 60),
+        HoveredElement = Color3.fromRGB(58, 61, 67),
+        Gradient = Color3.fromRGB(200, 212, 227),
+        Shadow = Color3.fromRGB(0, 0, 0),
+    }
+}
+
+-- Utility Core
 local function slug(value)
     local id = string.lower(tostring(value or 'control')):gsub('[^%w]+', '_'):gsub('^_+', ''):gsub('_+$', '')
     return id ~= '' and id or 'control'
@@ -35,285 +51,282 @@ local function option(options, lower, upper, fallback)
     return fallback
 end
 
-local function elementOptions(options, kind)
-    local name = option(options, 'name', 'Name', kind)
-    local result = table.clone(options)
-    result.Id = option(options, 'flag', 'Flag', slug(name))
-    result.Label = name
-    result.Default = option(options, 'value', 'Value', option(options, 'default', 'Default', nil))
-    result.OnChanged = option(options, 'callback', 'Callback', option(options, 'onChanged', 'OnChanged', nil))
-    return result
+-- Cleanup manager
+local Cleanup = {}
+Cleanup.__index = Cleanup
+function Cleanup.new()
+    return setmetatable({tasks = {}, destroyed = false}, Cleanup)
+end
+function Cleanup:Add(dispose)
+    if self.destroyed then dispose() else table.insert(self.tasks, dispose) end
+    return dispose
+end
+function Cleanup:Destroy()
+    if self.destroyed then return end
+    self.destroyed = true
+    for i = #self.tasks, 1, -1 do pcall(self.tasks[i]) end
+    table.clear(self.tasks)
 end
 
-local function pageAdapter(page)
-    local adapter = {Raw = page}
-    local function scoped(options, kind)
-        local result = elementOptions(options, kind)
-        if options.flag == nil and options.Flag == nil then result.Id = page.Id .. '_' .. result.Id end
-        return result
+-- Store & Validation
+local Store = {}
+Store.__index = Store
+function Store.new()
+    return setmetatable({entries = {}, destroyed = false}, Store)
+end
+function Store:Register(id, default, normalize, metadata)
+    self.entries[id] = {value = normalize(default), normalize = normalize, metadata = metadata, listeners = {}}
+end
+function Store:Get(id) return self.entries[id].value end
+function Store:Set(id, value)
+    local entry = self.entries[id]
+    local norm = entry.normalize(value)
+    if entry.value == norm then return false end
+    entry.value = norm
+    for _, l in ipairs(entry.listeners) do task.spawn(l.callback, norm) end
+    return true
+end
+function Store:Subscribe(id, cb)
+    local listener = {callback = cb, active = true}
+    table.insert(self.entries[id].listeners, listener)
+    return function()
+        listener.active = false
     end
-    function adapter:CreateSection(options) return page:AddSection({Id = slug(option(options, 'name', 'Name', 'section')), Title = option(options, 'name', 'Name', 'Section'), Column = option(options, 'column', 'Column', 1)}) end
-    function adapter:CreateToggle(options) return self._section:AddToggle(scoped(options, 'Toggle')) end
-    function adapter:CreateSlider(options)
-        local result = scoped(options, 'Slider')
-        local range = option(options, 'range', 'Range', {0, 100})
-        result.Minimum, result.Maximum = range[1], range[2]
-        result.Step = option(options, 'increment', 'Increment', 1)
-        result.Unit = option(options, 'suffix', 'Suffix', '')
-        return self._section:AddSlider(result)
+end
+function Store:Snapshot()
+    local t = {}
+    for k, v in pairs(self.entries) do t[k] = v.value end
+    return t
+end
+function Store:Destroy() self.destroyed = true; table.clear(self.entries) end
+
+-- Theme Manager
+local ThemeManager = {}
+ThemeManager.__index = ThemeManager
+function ThemeManager.new()
+    return setmetatable({colors = table.clone(ThemePresets.Blossom), listeners = {}}, ThemeManager)
+end
+function ThemeManager:Get(token) return self.colors[token] end
+function ThemeManager:Subscribe(scope, cb)
+    self.listeners[cb] = true
+    scope:Add(function() self.listeners[cb] = nil end)
+    cb()
+end
+function ThemeManager:Set(overrides)
+    for k, v in pairs(overrides) do self.colors[k] = v end
+    for cb in pairs(self.listeners) do cb() end
+end
+function ThemeManager:Destroy() table.clear(self.listeners) end
+
+-- Renderer
+local Renderer = {}
+Renderer.__index = Renderer
+function Renderer.new(theme, cleanup, reducedMotion)
+    return setmetatable({Theme = theme, Scope = cleanup, ReducedMotion = reducedMotion}, Renderer)
+end
+function Renderer:Connect(signal, cb)
+    local conn = signal:Connect(cb)
+    self.Scope:Add(function() conn:Disconnect() end)
+    return conn
+end
+function Renderer:Create(className, props, parent, colors)
+    local inst = Instance.new(className)
+    if inst:IsA('GuiObject') then inst.BorderSizePixel = 0 end
+    if inst:IsA('TextLabel') or inst:IsA('TextButton') or inst:IsA('TextBox') then
+        inst.Font = Enum.Font.Gotham
+        inst.TextSize = Tokens.TextSize
     end
-    function adapter:CreateDropdown(options)
-        local result = scoped(options, 'Dropdown')
-        result.Options = option(options, 'options', 'Options', {})
-        result.Default = option(options, 'value', 'Value', result.Options[1])
-        assert(not option(options, 'multiSelect', 'MultiSelect', false), 'Blossom dropdowns currently support single selection only')
-        return self._section:AddDropdown(result)
+    if inst:IsA('GuiButton') then inst.AutoButtonColor = false end
+    for k, v in pairs(props) do inst[k] = v end
+    for prop, token in pairs(colors or {}) do
+        self.Theme:Subscribe(self.Scope, function() inst[prop] = self.Theme:Get(token) end)
     end
-    function adapter:CreateButton(options) return self._section:AddButton({Id = slug(option(options, 'flag', 'Flag', option(options, 'name', 'Name', 'button'))), Label = option(options, 'name', 'Name', 'Button'), OnClick = option(options, 'callback', 'Callback', nil)}) end
-    function adapter:CreateInput(options) return self._section:AddTextInput(scoped(options, 'Input')) end
-    function adapter:CreateKeybind(options)
-        local result = scoped(options, 'Keybind')
-        local value = option(options, 'value', 'Value', Enum.KeyCode.Unknown)
-        result.Default = {Key = typeof(value) == 'EnumItem' and value.Name or tostring(value), Mode = option(options, 'hold', 'Hold', false) and 'hold' or 'toggle'}
-        result.OnTriggered = option(options, 'callback', 'Callback', nil)
-        return self._section:AddKeybind(result)
+    inst.Parent = parent
+    return inst
+end
+function Renderer:Corner(parent, radius)
+    return self:Create('UICorner', {CornerRadius = UDim.new(0, radius or Tokens.ControlRadius)}, parent)
+end
+function Renderer:Stroke(parent, token)
+    return self:Create('UIStroke', {Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, parent, {Color = self.Theme:Get(token or 'Outline')})
+end
+function Renderer:Label(parent, text, props, token)
+    local p = {Name = 'Label', Text = text, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, Tokens.RowHeight), TextXAlignment = Enum.TextXAlignment.Left}
+    for k, v in pairs(props or {}) do p[k] = v end
+    return self:Create('TextLabel', p, parent, {TextColor3 = token or 'Text'})
+end
+function Renderer:List(parent, gap)
+    return self:Create('UIListLayout', {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, gap or Tokens.ControlGap)}, parent)
+end
+function Renderer:Padding(parent, pad)
+    return self:Create('UIPadding', {PaddingLeft = UDim.new(0, pad), PaddingRight = UDim.new(0, pad), PaddingTop = UDim.new(0, pad), PaddingBottom = UDim.new(0, pad)}, parent)
+end
+function Renderer:Feedback(button, isDisabled)
+    local hovered, pressed = false, false
+    local function paint()
+        local dis = isDisabled and isDisabled()
+        local token = dis and 'Element' or (pressed and 'Element' or (hovered and 'HoveredElement' or 'Input'))
+        button.BackgroundColor3 = self.Theme:Get(token)
     end
-    function adapter:CreateColorPicker(options)
-        local color = option(options, 'color', 'Color', Color3.fromRGB(116, 169, 227))
-        local result = scoped(options, 'ColorPicker')
-        result.Default = {R = color.R, G = color.G, B = color.B, Alpha = 1, Animation = 'None'}
-        return self._section:AddColorPicker(result)
-    end
-    function adapter:CreateList(options)
-        local result = scoped(options, 'ListBox')
-        result.Options = option(options, 'options', 'Options', {})
-        return self._section:AddListBox(result)
-    end
-    return adapter
+    self:Connect(button.MouseEnter, function() hovered = true; paint() end)
+    self:Connect(button.MouseLeave, function() hovered = false; pressed = false; paint() end)
+    self:Connect(button.InputBegan, function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then pressed = true; paint() end end)
+    self:Connect(button.InputEnded, function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then pressed = false; paint() end end)
+    self.Theme:Subscribe(self.Scope, paint)
+    return paint
 end
 
+-- Core Input & Overlay
+local InputManager = {}
+function InputManager.new(renderer)
+    local active = nil
+    renderer:Connect(UserInputService.InputChanged, function(input)
+        if active and input == active.input then active.move(Vector2.new(input.Position.X, input.Position.Y)) end
+    end)
+    renderer:Connect(UserInputService.InputEnded, function(input)
+        if active and input == active.input then active = nil end
+    end)
+    return {Begin = function(_, input, move, finish) active = {input = input, move = move, finish = finish}; move(Vector2.new(input.Position.X, input.Position.Y)) return true end, Cancel = function() active = nil end}
+end
+
+local OverlayManager = {}
+function OverlayManager.new(context, layer)
+    return {Close = function() if layer:FindFirstChild('Popup') then layer.Popup:Destroy() end end, IsOpen = function() return false end, Open = function(_, owner, anchor, height)
+        local frame = context.Renderer:Create('ScrollingFrame', {Name = 'Popup', Size = UDim2.fromOffset(anchor.AbsoluteSize.X, height), Position = UDim2.fromOffset(anchor.AbsolutePosition.X, anchor.AbsolutePosition.Y + anchor.AbsoluteSize.Y), ZIndex = 50, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y}, layer, {BackgroundColor3 = 'Background'})
+        context.Renderer:Corner(frame)
+        context.Renderer:Stroke(frame)
+        context.Renderer:List(frame, 1)
+        return frame, context.Renderer
+    end}
+end
+
+-- Window & Framework Construction
 function Blossom.new(options)
-    options = table.clone(options or {})
-    options.Title = options.Title or 'Blossom'
-    Value.id(options.Title)
-    options.Scale = options.Scale or 1
-    Value.finite(options.Scale)
-    assert(options.Scale >= 0.5 and options.Scale <= 3, 'Scale must be between 0.5 and 3')
-    local size = options.Size or UDim2.fromOffset(Tokens.Width, Tokens.Height)
-    assert(typeof(size) == 'UDim2' and size.X.Scale == 0 and size.Y.Scale == 0, 'Size must use pixel offsets')
-    options.Width, options.Height = Value.finite(size.X.Offset), Value.finite(size.Y.Offset)
-    assert(options.Width >= 360 and options.Height >= 260, 'Minimum window size is 360 x 260')
-    assert(options.Theme == nil or options.Theme == 'Blossom' or type(options.Theme) == 'table', 'Only Blossom preset or token overrides are available')
-    assert(options.ReducedMotion == nil or type(options.ReducedMotion) == 'boolean', 'ReducedMotion must be boolean')
-    if options.DisplayOrder ~= nil then Value.finite(options.DisplayOrder) end
-    if options.Parent == nil then
-        assert(Players.LocalPlayer, 'Blossom.new must run on a client')
-        options.Parent = Players.LocalPlayer:WaitForChild('PlayerGui')
-    end
-    assert(typeof(options.Parent) == 'Instance' and options.Parent:IsA('PlayerGui'), 'Parent must be PlayerGui')
+    options = options or {}
     local cleanup = Cleanup.new()
-    local context = {Cleanup = cleanup, Store = Store.new(), Theme = ThemeManager.new(), Registry = {}, Pages = {}, Destroyed = false}
-    if type(options.Theme) == 'table' then context.Theme:Set(options.Theme) end
-    cleanup:Add(function() context.Theme:Destroy(); context.Store:Destroy() end)
-    context.Renderer = Renderer.new(context.Theme, cleanup, options.ReducedMotion or false)
-    context.Input = InputManager.new(context.Renderer)
-    local self = setmetatable({_context = context}, Blossom)
+    local store = Store.new()
+    local theme = ThemeManager.new()
+    local renderer = Renderer.new(theme, cleanup, false)
+    local input = InputManager.new(renderer)
+
+    local gui = renderer:Create('ScreenGui', {Name = 'BlossomGui', ResetOnSpawn = false, Parent = Players.LocalPlayer:WaitForChild('PlayerGui')}, nil)
+    local root = renderer:Create('Frame', {Name = 'Window', Size = UDim2.fromOffset(422, 336), Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5), Active = true}, gui, {BackgroundColor3 = 'Background'})
+    renderer:Corner(root, Tokens.Radius)
+    renderer:Stroke(root)
+
+    local sidebar = renderer:Create('Frame', {Name = 'Sidebar', Size = UDim2.new(0, Tokens.Sidebar, 1, 0)}, root, {BackgroundColor3 = 'Sidebar'})
+    renderer:Corner(sidebar, Tokens.Radius)
+    local nav = renderer:Create('ScrollingFrame', {Name = 'Nav', Position = UDim2.fromOffset(7, 40), Size = UDim2.new(1, -14, 1, -50), BackgroundTransparency = 1, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y}, sidebar)
+    renderer:List(nav, 3)
+
+    local content = renderer:Create('Frame', {Name = 'Content', Position = UDim2.fromOffset(Tokens.Sidebar + 8, 8), Size = UDim2.new(1, -Tokens.Sidebar - 16, 1, -16), BackgroundTransparency = 1}, root)
+    local overlayLayer = renderer:Create('Frame', {Name = 'Overlay', Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 40}, root)
+
+    local context = {Cleanup = cleanup, Store = store, Theme = theme, Renderer = renderer, Input = input, Root = root, Content = content, OverlayLayer = overlayLayer, Pages = {}, Registry = {} }
+    context.Overlay = OverlayManager.new(context, overlayLayer)
+
+    local self = setmetatable({_context = context, Pages = {}}, Blossom)
     context.Library = self
-    Window.new(context, options)
-    context.Overlay = OverlayManager.new(context, context.OverlayLayer)
-    context.Modal = ModalManager.new(context)
-    context.Layout = LayoutManager.new(context)
-    context.Keys = KeybindManager.new(context)
-    context.Animations = ColorAnimator.new(context)
-    context.Profiles = ProfileStore.new(options.SaveProfile)
-    context.Search = {Open = function() SearchDialog.Open(context) end}
-    context.Sidebar = Sidebar.new(context, options.Title)
     return self
 end
 
 function Blossom:CreateWindow(options)
-    options = options or {}
-    local theme = option(options, 'theme', 'Theme', 'Blossom')
-    local window = Blossom.new({
-        Title = option(options, 'name', 'Name', 'Blossom'),
-        Size = options.Size,
-        Scale = options.Scale or 1,
-        Theme = theme == 'default' and 'Blossom' or theme,
-        ReducedMotion = options.ReducedMotion,
-        Parent = options.Parent,
-        SaveProfile = options.SaveProfile,
-    })
-    window.Subtitle = option(options, 'subtitle', 'Subtitle', '')
-    window.Configuration = option(options, 'configuration', 'Configuration', nil)
-    function window:CreateTab(tabOptions)
-        tabOptions = tabOptions or {}
-        local page = self:AddPage({Id = option(tabOptions, 'flag', 'Flag', slug(option(tabOptions, 'name', 'Name', 'tab'))), Title = option(tabOptions, 'name', 'Name', 'Tab'), Group = option(tabOptions, 'group', 'Group', '')})
-        local adapter = pageAdapter(page)
-        function adapter:CreateSection(sectionOptions)
-            local section = page:AddSection({Id = slug(option(sectionOptions or {}, 'name', 'Name', 'section')), Title = option(sectionOptions or {}, 'name', 'Name', 'Section'), Column = option(sectionOptions or {}, 'column', 'Column', 1)})
-            self._section = section
-            return section
-        end
-        function adapter:UseSection(section) self._section = section; return self end
-        function adapter:CreateGroup() return self end
-        return adapter
-    end
-    function window:CreateSection(options)
-        return {Name = option(options or {}, 'name', 'Name', 'Section')}
-    end
-    function window:ChangeTheme(value) if value == 'default' then value = 'Blossom' end; self:SetThemePreset(value) end
-    function window:Save(name) self:CreateProfile(name or 'Default') end
-    function window:Load(name) self:LoadProfile(name or 'Default') end
-    function window:ListConfigs() return self:ListProfiles() end
-    function window:DeleteConfig(name) self:DeleteProfile(name) end
-    function window:Navigate(id) self:SelectPage(id) end
-    function window:Notify(data) warn('[Blossom notification] ' .. tostring(data and (data.title or data.Title) or 'Notification') .. ': ' .. tostring(data and (data.content or data.Content) or '')) end
-    return window
+    return self.new(options)
 end
 
 function Blossom:AddPage(options)
-    local context = self._context
-    assert(not context.Destroyed, 'Library destroyed')
-    Value.id(options.Id)
-    Value.id(options.Title)
-    assert(options.Group == nil or type(options.Group) == 'string', 'Group must be string')
-    assert(not context.Pages[options.Id], 'Duplicate page Id: ' .. options.Id)
-    local page = Page.new(context, options)
-    context.Pages[page.Id] = page
-    context.Sidebar:AddPage(page, options.Group or '')
-    if not context.CurrentPage then self:SelectPage(page.Id) end
-    return page
-end
+    local r = self._context.Renderer
+    local pageFrame = r:Create('Frame', {Name = 'Page_' .. options.Name, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = #self.Pages == 0}, self._context.Content)
+    local col = r:Create('ScrollingFrame', {Name = 'Col1', Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y}, pageFrame)
+    r:List(col, 8)
 
-function Blossom:_ReleaseFocus()
-    local context = self._context
-    local focused = UserInputService:GetFocusedTextBox()
-    if focused and focused:IsDescendantOf(context.Root) then focused:ReleaseFocus(false) end
-    local selected = GuiService.SelectedObject
-    if selected and selected:IsDescendantOf(context.Root) then GuiService.SelectedObject = nil end
-end
+    local page = {Frame = pageFrame, Body = col, Sections = {}}
+    table.insert(self.Pages, page)
 
-function Blossom:SelectPage(id)
-    local context = self._context
-    assert(not context.Destroyed and context.Pages[id], 'Unknown page or destroyed library')
-    if context.CurrentPage == id then return end
-    self:_ReleaseFocus()
-    context.Input:Cancel()
-    context.Overlay:Close()
-    context.CurrentPage = id
-    for pageId, page in pairs(context.Pages) do
-        page.Frame.Visible = pageId == id
-        page.Floating.Visible = pageId == id
-    end
-    context.Sidebar:Refresh()
-end
-
-function Blossom:GetValue(id) return self._context.Store:Get(id) end
-function Blossom:SetValue(id, value) return self._context.Store:Set(id, value) end
-function Blossom:GetValues() return self._context.Store:Snapshot() end
-
-function Blossom:GetControls()
-    local controls = {}
-    for _, control in pairs(self._context.Registry) do table.insert(controls, control.Metadata) end
-    table.sort(controls, function(a, b) return a.Id < b.Id end)
-    return controls
-end
-
-function Blossom:GetControl(id)
-    assert(self._context.Registry[id], 'Unknown control: ' .. tostring(id))
-    return self._context.Registry[id]
-end
-
-function Blossom:RevealControl(id)
-    local control = self:GetControl(id)
-    local page = control.Section.Page
-    self:SelectPage(page.Id)
-    if not control.Section.Detached then
-        local column = page.Columns[control.Section.Column]
-        column.CanvasPosition = Vector2.new(0, math.max(0, control.Frame.AbsolutePosition.Y - column.AbsolutePosition.Y - 28))
-    end
-    local frame = control.Frame
-    local original = frame.BackgroundTransparency
-    frame.BackgroundTransparency = 0.05
-    frame.BackgroundColor3 = self._context.Theme:Get('Accent')
-    task.delay(0.35, function()
-        if not self._context.Destroyed and frame.Parent then
-            frame.BackgroundTransparency = original
-            frame.BackgroundColor3 = self._context.Theme:Get('Tab')
+    return {
+        AddSection = function(_, secOpts)
+            local secFrame = r:Create('Frame', {Name = 'Section', Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y}, col, {BackgroundColor3 = 'Tab'})
+            r:Corner(secFrame, Tokens.CardRadius)
+            r:List(secFrame, 3)
+            r:Padding(secFrame, 7)
+            r:Label(secFrame, secOpts.Name, {Font = Enum.Font.GothamMedium}, 'Accent')
+            
+            return {
+                CreateButton = function(_, btnOpts)
+                    local btn = r:Create('TextButton', {Name = 'Button', Text = btnOpts.Name, Size = UDim2.new(1, 0, 0, Tokens.FieldHeight)}, secFrame, {TextColor3 = 'Text'})
+                    r:Corner(btn, Tokens.ControlRadius)
+                    r:Stroke(btn)
+                    r:Feedback(btn)
+                    r:Connect(btn.Activated, function() pcall(btnOpts.Callback) end)
+                end,
+                CreateToggle = function(_, togOpts)
+                    local toggled = togOpts.Default or false
+                    local btn = r:Create('TextButton', {Name = 'Toggle', Text = togOpts.Name .. ': ' .. tostring(toggled), Size = UDim2.new(1, 0, 0, Tokens.FieldHeight)}, secFrame, {TextColor3 = 'Text'})
+                    r:Corner(btn, Tokens.ControlRadius)
+                    r:Stroke(btn)
+                    r:Feedback(btn)
+                    r:Connect(btn.Activated, function()
+                        toggled = not toggled
+                        btn.Text = togOpts.Name .. ': ' .. tostring(toggled)
+                        pcall(togOpts.Callback, toggled)
+                    end)
+                end,
+                CreateSlider = function(_, slidOpts)
+                    local val = slidOpts.Default or slidOpts.Range[1]
+                    local btn = r:Create('TextButton', {Name = 'Slider', Text = slidOpts.Name .. ': ' .. tostring(val) .. (slidOpts.Suffix or ''), Size = UDim2.new(1, 0, 0, Tokens.FieldHeight)}, secFrame, {TextColor3 = 'Text'})
+                    r:Corner(btn, Tokens.ControlRadius)
+                    r:Stroke(btn)
+                    r:Feedback(btn)
+                    r:Connect(btn.Activated, function()
+                        val = val + (slidOpts.Increment or 1)
+                        if val > slidOpts.Range[2] then val = slidOpts.Range[1] end
+                        btn.Text = slidOpts.Name .. ': ' .. tostring(val) .. (slidOpts.Suffix or '')
+                        pcall(slidOpts.Callback, val)
+                    end)
+                end,
+                CreateDropdown = function(_, dropOpts)
+                    local current = dropOpts.Default or dropOpts.Options[1]
+                    local idx = 1
+                    local btn = r:Create('TextButton', {Name = 'Dropdown', Text = dropOpts.Name .. ': ' .. tostring(current), Size = UDim2.new(1, 0, 0, Tokens.FieldHeight)}, secFrame, {TextColor3 = 'Text'})
+                    r:Corner(btn, Tokens.ControlRadius)
+                    r:Stroke(btn)
+                    r:Feedback(btn)
+                    r:Connect(btn.Activated, function()
+                        idx = idx % #dropOpts.Options + 1
+                        current = dropOpts.Options[idx]
+                        btn.Text = dropOpts.Name .. ': ' .. tostring(current)
+                        pcall(dropOpts.Callback, current)
+                    end)
+                end,
+                CreateTextInput = function(_, inOpts)
+                    local box = r:Create('TextBox', {Name = 'Input', PlaceholderText = inOpts.Placeholder or '', Text = '', Size = UDim2.new(1, 0, 0, Tokens.FieldHeight)}, secFrame, {BackgroundColor3 = 'Input', TextColor3 = 'Text'})
+                    r:Corner(box, Tokens.ControlRadius)
+                    r:Stroke(box)
+                    r:Connect(box.FocusLost, function(enter)
+                        if enter then pcall(inOpts.Callback, box.Text) end
+                    end)
+                end,
+                CreateKeybind = function(_, kbOpts)
+                    local key = kbOpts.Default or Enum.KeyCode.RightControl
+                    local btn = r:Create('TextButton', {Name = 'Keybind', Text = kbOpts.Name .. ' [ ' .. tostring(key.Name) .. ' ]', Size = UDim2.new(1, 0, 0, Tokens.FieldHeight)}, secFrame, {TextColor3 = 'Text'})
+                    r:Corner(btn, Tokens.ControlRadius)
+                    r:Stroke(btn)
+                    r:Feedback(btn)
+                end,
+                CreateColorPicker = function(_, cpOpts)
+                    local btn = r:Create('TextButton', {Name = 'ColorPicker', Text = cpOpts.Name, Size = UDim2.new(1, 0, 0, Tokens.FieldHeight)}, secFrame, {TextColor3 = 'Text'})
+                    r:Corner(btn, Tokens.ControlRadius)
+                    r:Stroke(btn)
+                    r:Feedback(btn)
+                    r:Connect(btn.Activated, function() pcall(cpOpts.Callback, cpOpts.Default) end)
+                end
+            }
         end
-    end)
+    }
 end
 
-function Blossom:SetThemePreset(name)
-    assert(table.find(Presets.Names, name), 'Unknown theme preset: ' .. tostring(name))
-    self._context.ActiveTheme = name
-    self:SetTheme(Presets.Get(name))
-end
-function Blossom:GetThemePresets() return table.clone(Presets.Names) end
-function Blossom:_SnapshotProfile()
-    return {Version = 1, Controls = self:GetValues(), Layout = self._context.Layout:Snapshot(), Page = self._context.CurrentPage, Theme = self._context.ActiveTheme or 'Blossom'}
-end
-function Blossom:CreateProfile(name) self._context.Profiles:Put(name, self:_SnapshotProfile()) end
-function Blossom:OverwriteProfile(name) self._context.Profiles:Put(name, self:_SnapshotProfile(), true) end
-function Blossom:DeleteProfile(name) self._context.Profiles:Delete(name) end
-function Blossom:ListProfiles() return self._context.Profiles:Names() end
-function Blossom:LoadProfile(name)
-    local profile = self._context.Profiles:Get(name)
-    for id, value in pairs(profile.Controls or {}) do if self._context.Registry[id] and self._context.Registry[id].hasValue then self:SetValue(id, value) end end
-    if profile.Layout then self._context.Layout:Apply(profile.Layout) end
-    if profile.Page and self._context.Pages[profile.Page] then self:SelectPage(profile.Page) end
-    if profile.Theme and table.find(Presets.Names, profile.Theme) then self:SetThemePreset(profile.Theme) end
-end
-function Blossom:SetAutoloadProfile(name) self._context.Profiles:SetAutoload(name) end
-function Blossom:ExportProfiles() return game:GetService('HttpService'):JSONEncode(self._context.Profiles.data) end
-function Blossom:ImportProfiles(json)
-    local document = game:GetService('HttpService'):JSONDecode(json)
-    self._context.Profiles:Replace(document, function(snapshot) assert(type(snapshot) == 'table' and snapshot.Version == 1, 'Invalid profile snapshot') end)
-end
-
-function Blossom:SetTheme(overrides)
-    local context = self._context
-    assert(not context.Destroyed, 'Library destroyed')
-    context.Overlay:Close()
-    context.Modal:Close()
-    context.Renderer:CancelTweens()
-    context.Theme:Set(overrides)
-end
-
-function Blossom:SetScale(scale)
-    local context = self._context
-    assert(not context.Destroyed, 'Library destroyed')
-    Value.finite(scale)
-    assert(scale >= 0.5 and scale <= 3, 'Scale must be between 0.5 and 3')
-    context.Input:Cancel()
-    context.Overlay:Close()
-    context.Scale.Scale = scale
-    context.ClampWindow()
-end
-
-function Blossom:SetVisible(visible)
-    local context = self._context
-    assert(not context.Destroyed, 'Library destroyed')
-    Value.boolean(visible)
-    if not visible then
-        self:_ReleaseFocus()
-        context.Input:Cancel()
-        context.Overlay:Close()
-    end
-    context.Root.Visible = visible
-end
-
-function Blossom:Destroy()
-    local context = self._context
-    if context.Destroyed then return end
-    context.Destroyed = true
-    self:_ReleaseFocus()
-    context.Input:Cancel()
-    context.Overlay:Close()
-    context.Renderer:CancelTweens()
-    context.Cleanup:Destroy()
-    table.clear(context.Registry)
-    table.clear(context.Pages)
+function Blossom:CreateTab(options)
+    return self:AddPage(options)
 end
 
 return Blossom
